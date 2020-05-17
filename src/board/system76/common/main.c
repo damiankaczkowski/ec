@@ -7,6 +7,7 @@
 #include <board/battery.h>
 #include <board/board.h>
 #include <board/ecpm.h>
+#include <board/flash.h>
 #include <board/gpio.h>
 #include <board/gctrl.h>
 #include <board/kbc.h>
@@ -44,6 +45,7 @@ void init(void) {
     arch_init();
     board_init();
     gctrl_init();
+    flash_init();
     gpio_init();
 
     // Can happen in any order
