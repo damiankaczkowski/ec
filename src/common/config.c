@@ -204,7 +204,25 @@ bool config_register(config_t *entry) __reentrant {
     entry->next = g_config_entries;
     g_config_entries = entry;
 
-    // TODO: Read the default value from flash, if present.
+    // Read the stored value from flash, if present.
+    uint32_t flash_addr = config_find_entry(entry->config_short);
+    if (flash_addr) {
+        int32_t saved_value = config_flash_value(flash_addr);
+
+        int64_t min = entry->value.min_value;
+        int64_t max = entry->value.max_value;
+
+        if (min <= saved_value &&
+            max >= saved_value) {
+            entry->value.value = saved_value;
+
+            /* Notify any listeners. */
+            if (entry->set_callback) {
+                entry->set_callback(entry);
+            }
+        }
+    }
+
 
     return true;
 }

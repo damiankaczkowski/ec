@@ -33,7 +33,7 @@ struct config_t {
 /**
  * Register a configuration type
  */
-bool config_register(config_t *entry);
+bool config_register(config_t *entry) __reentrant;
 
 /**
  * Get the configuration handler for a given name.
