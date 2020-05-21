@@ -18,10 +18,11 @@
 config_t *g_config_entries = NULL;
 
 #define CONFIG_ADDRESS  (0x10000L)
-// 32KB of persistant memory starting 64KB in.
+#define CONFIG_SIZE   (1 * 1024)  /* 1K block - code currently assumes this matches the erase size */
 #define CONFIG_PERSISTANT_MAGIC     (0xCF1C0F10)
+
 uint32_t __code __at(CONFIG_ADDRESS) config_magic;
-uint8_t __code __at(CONFIG_ADDRESS + sizeof(config_magic)) config_persistant[4 * 1024 - sizeof(config_magic)];
+uint8_t __code __at(CONFIG_ADDRESS + sizeof(config_magic)) config_persistant[CONFIG_SIZE - sizeof(config_magic)];
 
 #define CONFIG_FLASH_ENTRY_LENGTH_INVALID   (0xFF)
 #define CONFIG_FLASH_ENTRY_CURRENT          (0xFF)
@@ -31,21 +32,12 @@ uint8_t __code __at(CONFIG_ADDRESS + sizeof(config_magic)) config_persistant[4 *
 #define CONFIG_FLASH_ENTRY_LEN_OFFSET       (1)
 #define CONFIG_FLASH_ENTRY_VALUE_OFFSET     (2)
 #define CONFIG_FLASH_ENTRY_NAME_OFFSET      (6)
+#define CONFIG_FLASH_ENTRY_HEADER_SIZE      (6)
 // config_persistant format
 // (1) byte: Current / Obsolete. When a config entry is updated, byte is written to Obsolete and a new entry is added later.
 // (1) byte: Short Name Length. When 0xFF, no more config entries exist.
 // (4) bytes: Value
 // Len Bytes: short name.
-
-void flash_dump_str(uint32_t addr, uint8_t len) {
-    while(len) {
-        char byte = flash_read_u8(addr);
-
-        putchar(byte);
-        len--;
-        addr++;
-    }
-}
 
 int8_t flash_strncmp(uint32_t addr, const char* str, uint8_t len) {
     while(len) {
@@ -66,8 +58,6 @@ int8_t flash_strncmp(uint32_t addr, const char* str, uint8_t len) {
 
 bool config_validate_magic(void) {
     uint32_t magic = flash_read_u32(CONFIG_ADDRESS);
-
-    DEBUG("magic: %x\n", magic);
 
     return (CONFIG_PERSISTANT_MAGIC == magic);
 }
@@ -105,13 +95,15 @@ void config_save_entry_value(uint32_t addr, int32_t value) {
     flash_write_u32(addr + CONFIG_FLASH_ENTRY_VALUE_OFFSET, value);
 }
 
-void config_save_entry(const char* config_short, int32_t value) {
+bool config_save_entry(const char* config_short, int32_t value) {
     uint32_t addr = config_find_free_entry();
+    uint8_t len = strlen(config_short);
+    uint32_t needed_space = len + CONFIG_FLASH_ENTRY_HEADER_SIZE;
 
-    if (addr) {
-        DEBUG("Saving convig: %s\n", config_short);
+
+    if (addr && ((addr + needed_space - CONFIG_ADDRESS) < sizeof(config_persistant))) {
+        DEBUG("Saving config: %s", config_short);
         DEBUG(" = %ld\n", value);
-        uint8_t len = strlen(config_short);
 
         config_save_entry_len(addr, len);
 
@@ -122,6 +114,19 @@ void config_save_entry(const char* config_short, int32_t value) {
             len--;
             flash_write_u8(addr + CONFIG_FLASH_ENTRY_NAME_OFFSET + len, config_short[len]);
         }
+
+        return true;
+    } else {
+        return false;
+    }
+}
+
+void config_save_entries() __reentrant {
+    config_t *entry = g_config_entries;
+
+    while (entry) {
+        (void)config_save_entry(entry->config_short, entry->value.value);
+        entry = entry->next;
     }
 }
 
@@ -162,12 +167,7 @@ uint32_t config_find_entry(const char* config_short) {
             }
 
             if(config_flash_valid(addr)) {
-                DEBUG("Cfg: ");
-                flash_dump_str(addr + CONFIG_FLASH_ENTRY_NAME_OFFSET, len);
-                DEBUG("\n  Len: %d\n", len);
-
                 if(config_flash_found(addr, config_short, len)) {
-                    DEBUG("FOUND\n");
                     return addr;
                 }
             }
@@ -177,14 +177,12 @@ uint32_t config_find_entry(const char* config_short) {
         }
     }
 
-    DEBUG("%s not found.\n", config_short);
     // Not found.
     return 0;
 }
 
 void config_invalidate_entry(uint32_t addr) {
     if (addr) {
-        DEBUG("Invalidating %lx\n", addr);
         flash_write_u8(addr + CONFIG_FLASH_ENTRY_CURRENT_OFFSET, CONFIG_FLASH_ENTRY_OBSOLETE);
     }
 }
@@ -271,8 +269,9 @@ bool config_set_value(config_t *config, int32_t value) __reentrant {
     bool valid = false;
 
     if (config) {
-        volatile int64_t min = config->value.min_value;
-        volatile int64_t max = config->value.max_value;
+        bool saved = true;
+        int64_t min = config->value.min_value;
+        int64_t max = config->value.max_value;
 
         if (min <= value &&
             max >= value) {
@@ -287,17 +286,25 @@ bool config_set_value(config_t *config, int32_t value) __reentrant {
 
                 if(oldval != value) {
                     config_invalidate_entry(flash_addr);
-                    config_save_entry(config->config_short, value);
+                    saved = config_save_entry(config->config_short, value);
                 }
             } else {
                 // No entry, create one.
-                config_save_entry(config->config_short, value);
+                saved = config_save_entry(config->config_short, value);
             }
 
             /* Notify any listeners. */
             if (config->set_callback) {
                 config->set_callback(config);
             }
+        }
+
+        if (!saved) {
+            // Not enough space exists. clear out flash and re-write.
+            flash_erase(CONFIG_ADDRESS);
+
+            config_save_entries();
+
         }
     }
 
